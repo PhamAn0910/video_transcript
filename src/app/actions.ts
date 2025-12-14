@@ -76,39 +76,77 @@ export async function processVideo(videoUrl: string) {
   }
 }
 
-async function translateChunk(chunk: { text: string; offset: number; duration: number }[]): Promise<SubtitleBlock[]> {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+async function translateChunk(chunk: { text: string; offset: number; duration: number }[], retryCount = 0): Promise<SubtitleBlock[]> {
+  const MAX_RETRIES = 3;
+  const model = genAI.getGenerativeModel({ 
+    model: "gemini-2.5-flash",
+    generationConfig: {
+      temperature: 0.2,
+      topP: 0.8,
+    }
+  });
   
-  const prompt = `You are a professional Vietnamese translator specializing in natural, conversational language.
+  const prompt = `You are a translator. Translate the subtitle text to Vietnamese.
 
-Translate the following English subtitle data to Vietnamese with these STRICT RULES:
-
-1. Keep "offset" and "duration" values EXACTLY the same - DO NOT MODIFY
-2. Only translate the "text" field
-3. Use natural, conversational Vietnamese:
-   - Use "mình" instead of "tôi" for casual contexts
-   - Use "bạn" for "you" in friendly contexts
-   - Avoid overly formal or literary language
-   - Sound like a native Vietnamese speaker
-4. Preserve the meaning and tone of the original
-5. Return ONLY a valid JSON array, no markdown formatting
+RULES:
+1. Return ONLY valid JSON array - NO markdown, NO explanation
+2. Keep "offset" and "duration" EXACTLY the same
+3. Only translate "text" field to natural Vietnamese
 
 Input:
 ${JSON.stringify(chunk)}
 
-Output format: [{"text":"translated text","offset":123,"duration":456},...]`;
+Output (valid JSON only):
+[{"text":"Vietnamese","offset":123,"duration":456}]`;
 
-  const result = await model.generateContent(prompt);
-  const response = await result.response;
-  const text = response.text();
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
 
-  // Clean markdown if present
-  const cleanedText = text
-    .replace(/```json\n?/g, '')
-    .replace(/```\n?/g, '')
-    .trim();
-  
-  return JSON.parse(cleanedText);
+    // Clean markdown and extra text
+    let cleanedText = text
+      .replace(/```json\n?/gi, '')
+      .replace(/```\n?/g, '')
+      .trim();
+    
+    // Extract JSON array
+    const jsonMatch = cleanedText.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      cleanedText = jsonMatch[0];
+    }
+    
+    const parsed = JSON.parse(cleanedText);
+    
+    // If response length mismatches, gracefully fill gaps with original text
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error('Invalid response structure');
+    }
+
+    // Map over original chunk length; use translated text when available
+    return chunk.map((orig, idx) => {
+      const translated = parsed[idx];
+      return {
+        text: translated?.text || orig.text,
+        offset: orig.offset,
+        duration: orig.duration,
+      };
+    });
+    
+  } catch (error) {
+    console.error(`Translation error (attempt ${retryCount + 1}):`, error);
+    
+    if (retryCount < MAX_RETRIES) {
+      await new Promise(r => setTimeout(r, 1000 * (retryCount + 1)));
+      return translateChunk(chunk, retryCount + 1);
+    }
+    
+    // Return original text if all retries fail
+    return chunk.map(item => ({
+      ...item,
+      text: `[Lỗi dịch] ${item.text}`
+    }));
+  }
 }
 
 function extractVideoId(url: string): string | null {

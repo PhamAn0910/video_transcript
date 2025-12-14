@@ -2,6 +2,7 @@
 
 import { Innertube } from 'youtubei.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { unstable_cache } from 'next/cache';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
@@ -11,6 +12,66 @@ export type SubtitleBlock = {
   duration: number;
 };
 
+// 1. Define the expensive worker function
+const generateTranscriptWorker = async (videoId: string) => {
+  console.log("MISS: Cache not found, generating fresh transcript for:", videoId);
+  
+  // 1. Fetch transcript from YouTube using youtubei.js
+  const youtube = await Innertube.create();
+  const info = await youtube.getInfo(videoId);
+  
+  // Get available caption tracks
+  const transcriptInfo = await info.getTranscript();
+  
+  if (!transcriptInfo?.transcript?.content?.body?.initial_segments) {
+    throw new Error("No transcript found. The video may not have captions enabled.");
+  }
+
+  const segments = transcriptInfo.transcript.content.body.initial_segments;
+  
+  if (!segments || segments.length === 0) {
+    throw new Error("No transcript segments found.");
+  }
+
+  console.log(`Success! Found ${segments.length} transcript entries`);
+
+  // Convert to our format - filter out section headers and only keep segments with text
+  const transcript: SubtitleBlock[] = segments
+    .filter((segment): segment is typeof segment & { start_ms: string; end_ms: string; snippet: { text: string } } => {
+      return 'start_ms' in segment && 'snippet' in segment && segment.snippet?.text !== undefined;
+    })
+    .map((segment) => ({
+      text: segment.snippet.text || '',
+      offset: parseInt(segment.start_ms) || 0,
+      duration: (parseInt(segment.end_ms) || 0) - (parseInt(segment.start_ms) || 0),
+    }));
+
+  console.log("Transcript sample:", transcript.slice(0, 2));
+
+  // 2. Translate in chunks (Gemini has token limits)
+  const chunkSize = 50;
+  const translatedSubs: SubtitleBlock[] = [];
+
+  for (let i = 0; i < transcript.length; i += chunkSize) {
+    const chunk = transcript.slice(i, i + chunkSize);
+    console.log(`Translating chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(transcript.length/chunkSize)}...`);
+    const translated = await translateChunk(chunk);
+    translatedSubs.push(...translated);
+  }
+
+  return translatedSubs;
+};
+
+// 2. Wrap it with unstable_cache
+const getCachedTranscript = unstable_cache(
+  async (videoId: string) => generateTranscriptWorker(videoId),
+  ['transcript-cache'], // A tag to identify this cache group
+  {
+    revalidate: 86400, // Cache for 24 hours (in seconds)
+    tags: ['transcript'] 
+  }
+);
+
 export async function processVideo(videoUrl: string) {
   try {
     // Extract video ID from URL
@@ -19,52 +80,13 @@ export async function processVideo(videoUrl: string) {
       throw new Error("Invalid YouTube URL. Please enter a valid YouTube link.");
     }
 
-    console.log("Fetching transcript for video ID:", videoId);
-
-    // 1. Fetch transcript from YouTube using youtubei.js
-    const youtube = await Innertube.create();
-    const info = await youtube.getInfo(videoId);
+    console.log("Requesting transcript for ID:", videoId);
     
-    // Get available caption tracks
-    const transcriptInfo = await info.getTranscript();
-    
-    if (!transcriptInfo?.transcript?.content?.body?.initial_segments) {
-      throw new Error("No transcript found. The video may not have captions enabled.");
-    }
+    // This will check the cache first. If found, it returns instantly.
+    // If not, it runs the worker, saves the result, and returns.
+    const data = await getCachedTranscript(videoId);
 
-    const segments = transcriptInfo.transcript.content.body.initial_segments;
-    
-    if (!segments || segments.length === 0) {
-      throw new Error("No transcript segments found.");
-    }
-
-    console.log(`Success! Found ${segments.length} transcript entries`);
-
-    // Convert to our format - filter out section headers and only keep segments with text
-    const transcript: SubtitleBlock[] = segments
-      .filter((segment): segment is typeof segment & { start_ms: string; end_ms: string; snippet: { text: string } } => {
-        return 'start_ms' in segment && 'snippet' in segment && segment.snippet?.text !== undefined;
-      })
-      .map((segment) => ({
-        text: segment.snippet.text || '',
-        offset: parseInt(segment.start_ms) || 0,
-        duration: (parseInt(segment.end_ms) || 0) - (parseInt(segment.start_ms) || 0),
-      }));
-
-    console.log("Transcript sample:", transcript.slice(0, 2));
-
-    // 2. Translate in chunks (Gemini has token limits)
-    const chunkSize = 50;
-    const translatedSubs: SubtitleBlock[] = [];
-
-    for (let i = 0; i < transcript.length; i += chunkSize) {
-      const chunk = transcript.slice(i, i + chunkSize);
-      console.log(`Translating chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(transcript.length/chunkSize)}...`);
-      const translated = await translateChunk(chunk);
-      translatedSubs.push(...translated);
-    }
-
-    return { success: true, data: translatedSubs };
+    return { success: true, data };
 
   } catch (error: unknown) {
     console.error("Processing Error:", error);

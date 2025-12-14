@@ -280,7 +280,7 @@ export default function Home() {
               <Button
                 variant={viewMode === 'player' ? 'default' : 'outline'}
                 onClick={() => setViewMode('player')}
-                className={viewMode === 'player' ? 'bg-blue-600' : 'border-slate-700'}
+                className={viewMode === 'player' ? 'bg-blue-600' : 'bg-transparent border-slate-700 text-white hover:bg-slate-800 hover:text-white'}
               >
                 <Monitor className="mr-2 h-4 w-4" />
                 Xem với phụ đề
@@ -288,7 +288,7 @@ export default function Home() {
               <Button
                 variant={viewMode === 'list' ? 'default' : 'outline'}
                 onClick={() => setViewMode('list')}
-                className={viewMode === 'list' ? 'bg-blue-600' : 'border-slate-700'}
+                className={viewMode === 'list' ? 'bg-blue-600' : 'bg-transparent border-slate-700 text-white hover:bg-slate-800 hover:text-white'}
               >
                 <FileText className="mr-2 h-4 w-4" />
                 Xem danh sách
@@ -296,7 +296,7 @@ export default function Home() {
               <Button
                 onClick={downloadSRT}
                 variant="outline"
-                className="border-slate-700 hover:bg-slate-800"
+                className="bg-transparent border-slate-700 text-white hover:bg-slate-800 hover:text-white"
               >
                 <Download className="mr-2 h-4 w-4" />
                 Tải .SRT
